@@ -44,7 +44,6 @@
 
 
 (defn postprocess-doc [doc]
-  (.log js/console "postprocess " (str doc))
   (-> doc
       (update :married-to (partial mapv (partial vector :pouch/by-id)))))
 
@@ -74,7 +73,6 @@
 
       (= c fetch-doc-chan)
       (let [buffer (conj buffer v)]
-        (.log js/console "buffer: " (str buffer))
         (if (<= +batch-size+ (count buffer))
           (do (>! all-docs-batches buffer)
               (recur (timeout +fetch-timeout+) #{}))
@@ -108,15 +106,10 @@
 
 (defmethod read :pouch/by-id
   [{:keys [ast parser state query] :as env} key params]
-  ;; (.log js/console "read " (str (:key ast)))
   (if-let [doc (get-in @state (:key ast))]
-    (let [;; _ (.log js/console "found " (str (:key ast)) " in state, making recursive call")
-          value (parser (assoc env :context doc) query)]
-      (do
-        ;; (.log js/console "recursive call value: " (str value))
-        {:value value}))
-    (let [;; _ (.log js/console "did not find " (str (:key ast)) " in state, returning :loading and firing off external load")
-          _ (fetch-doc! (second (:key ast)))]
+    {:value (parser (assoc env :context doc) query)}
+    (do
+      (fetch-doc! (second (:key ast)))
       {:value :loading})))
 
 (defmethod read :default
