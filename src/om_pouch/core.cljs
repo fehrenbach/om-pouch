@@ -90,11 +90,8 @@
      (if err
        (.alert js/window err)
        (let [rows (gobj/get res "rows")
-             ;; _ (.log js/console "rows: " rows)
              pdocs (map #(postprocess-doc (js->clj (gobj/get % "doc") :keywordize-keys true))
-                        rows)
-             ;; _ (.log js/console "postprocessed docs: " (str pdocs))
-             ]
+                        rows)]
          ;; TODO merge order? deeper merge?
          (om/merge! reconciler {:pouch/by-id (merge (:pouch/by-id @app-state)
                                                     (zipmap ids pdocs))})
@@ -108,10 +105,6 @@
   (put! fetch-doc-chan id))
 
 (defmulti read om/dispatch)
-
-(defmethod read :window/size
-  [{:keys [state]} key params]
-  {:value (:window/size @state)})
 
 (defmethod read :pouch/by-id
   [{:keys [ast parser state query] :as env} key params]
@@ -155,8 +148,7 @@
   (om/reconciler {:state app-state
                   :parser parser}))
 
-(def query [:window/size
-            {[:pouch/by-id "3"] [:name {:married-to [:name {:married-to [:name]}]}]}
+(def query [{[:pouch/by-id "3"] [:name {:married-to [:name {:married-to [:name]}]}]}
             {[:pouch/by-id "4"] [:name {:married-to [:name {:married-to [:name]}]}]}
             {[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}
             ])
@@ -178,38 +170,6 @@
                      (dom/p nil "four" (str four))
                      (dom/p nil "six" (str six))
                      ))))
-
-(comment
-  ;; ID not actually unique..
-  ({[:pouch/view "harvestsByFooBar"] [:foo :bar]}
-   {:startkey "abc"
-    :reduce true})
-  
-  ({:view/currentHives [:abc]} {:startkey "yard"})
-  ;; So how would I do
-  ;; YardName (current occupation / max hives)
-  ;; e.g.  - Locherhof        19/20
-  ;;       - Unterwaldhausen  22/24
-  ({:view/hivesAtYard [{:yard [:name :config]} :max]}
-   {:grouplevel 1
-    :reduce true})
-  ;; No good, because it requires postprocessing
-
-  ;; How about custom code for reading views?
-  ;; Problem: asynchronicity
-  ;; Solution: Cache custom view result(s) in a :ephemeral/name toplevel key. Clear on database change.
-
-  ;; Meh.. not sure.
-
-  ;; User provides some arbitrary name.
-  ;; We store and retrieve view results keyed by a hash of their parameters.
-
-  [({:view/hivesAtYard_sub [{:yard [:name :config]}]}
-    {:view "hivesAtYard"
-     :grouplevel 1
-     :reduce true})]
-  ;; Still need custom postprocessing, but we need that for docs, too.
-  )
 
 (om/add-root! reconciler
               RootView (gdom/getElement "app"))
