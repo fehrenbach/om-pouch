@@ -1,6 +1,8 @@
 (ns om-pouch.core
+  (:require-macros [cljs.core.async.macros :refer [go go-loop]])
   (:require [goog.dom :as gdom]
             [goog.object :as gobj]
+            [cljs.core.async :refer [<! >! put! chan alts! timeout]]
             [om.next :as om :refer-macros [defui]]
             [om.dom :as dom]
             cljsjs.pouchdb))
@@ -46,33 +48,64 @@
   (-> doc
       (update :married-to (partial mapv (partial vector :pouch/by-id)))))
 
-;; TODO should probably use a channel, deduplicate and group for bulk fetching
-(defn fetch-doc! [id]
-  (let [ids [id]]
-    (.log js/console "fetch docs: " (str ids))
-    (.allDocs
-     db
-     (clj->js {:keys ids
-               :include_docs true})
-     (fn [err res]
-       (if err
-         (.alert js/window err)
-         (let [rows (gobj/get res "rows")
-               ;; _ (.log js/console "rows: " rows)
-               pdocs (map #(postprocess-doc (js->clj (gobj/get % "doc") :keywordize-keys true))
-                          rows)
-               ;; _ (.log js/console "postprocessed docs: " (str pdocs))
-               ]
-           ;; this overrides all existing docs :/
-           ;; (cb {:pouch/by-id (zipmap ids pdocs)})
+;; This stuff fetches documents by id.
+;; Fetching in read is not very smart, so we deduplicate and batch here.
+;; This kind of works, but could be smarter.
+;; We could remove ids from batches that are in transit, that is, that were requested from pouch, but not yet merged.
+;; The timeout and batch size need calibration. They both need to be large enough to allow for effective deduplication, but small enough to not be too slow.
+;; The timeout is a crutch. Ideally, we would want to return a list of docs to read from the parser, but I can't get that to work.
+;; Still better than timeouts would be to know when we finished parsing, so we can batch all docs in a single parse.
 
-           ;; TODO merge order? deeper merge?
-           (om/merge! reconciler {:pouch/by-id (merge (:pouch/by-id @app-state)
-                                                      (zipmap ids pdocs))})
-           ;; BUG shit doesn't rerender
-           ;; om/merge! docstring says: "Affected components managed by the reconciler will re-render."
-           ;; Doesn't seem to work.
-           (om/force-root-render! reconciler)))))))
+(def +fetch-timeout+ 1000)
+(def +batch-size+ 5)
+
+(def fetch-doc-chan (chan))
+(def all-docs-batches (chan))
+
+(go-loop [timeout-chan (timeout +fetch-timeout+)
+          buffer #{}]
+  (let [[v c] (alts! [fetch-doc-chan timeout-chan])]
+    (cond
+      (= c timeout-chan)
+      (do
+        (when-not (empty? buffer)
+          (>! all-docs-batches buffer))
+        (recur (timeout +fetch-timeout+) #{}))
+
+      (= c fetch-doc-chan)
+      (let [buffer (conj buffer v)]
+        (.log js/console "buffer: " (str buffer))
+        (if (<= +batch-size+ (count buffer))
+          (do (>! all-docs-batches buffer)
+              (recur (timeout +fetch-timeout+) #{}))
+          (recur timeout-chan buffer))))))
+
+(go-loop [ids (<! all-docs-batches)]
+  (.log js/console "fetch docs: " (str ids))
+  (.allDocs
+   db
+   (clj->js {:keys ids
+             :include_docs true})
+   (fn [err res]
+     (if err
+       (.alert js/window err)
+       (let [rows (gobj/get res "rows")
+             ;; _ (.log js/console "rows: " rows)
+             pdocs (map #(postprocess-doc (js->clj (gobj/get % "doc") :keywordize-keys true))
+                        rows)
+             ;; _ (.log js/console "postprocessed docs: " (str pdocs))
+             ]
+         ;; TODO merge order? deeper merge?
+         (om/merge! reconciler {:pouch/by-id (merge (:pouch/by-id @app-state)
+                                                    (zipmap ids pdocs))})
+         ;; BUG shit doesn't rerender
+         ;; om/merge! docstring says: "Affected components managed by the reconciler will re-render."
+         ;; Doesn't seem to work though, workaround: force render
+         (om/force-root-render! reconciler)))))
+  (recur (<! all-docs-batches)))
+
+(defn fetch-doc! [id]
+  (put! fetch-doc-chan id))
 
 (defmulti read om/dispatch)
 
