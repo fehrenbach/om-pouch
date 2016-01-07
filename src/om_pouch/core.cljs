@@ -9,33 +9,35 @@
 
 (defonce db (js/PouchDB. "om-pouch"))
 
-(comment          :pouch/by-id {"2" {:_id "2" :name "Joe" :age 33 :married false}
-                                "3" {:_id "3" :name "Paul" :age 45 :married true :married-to [:pouch/by-id "1"]}
-                                "4" {:_id "4" :name "Bob" :age 55 :married true :married-to [[:pouch/by-id "1"]
-                                                                                             [:pouch/by-id "3"]]}
-                                "5" {:_id "5" :name "Jim" :age 35 :married-to [:pouch/by-id "4"]}})
-
-(defonce app-state
-  (atom {:window/size [1920 1200]}))
+(defonce app-state (atom {}))
 
 (comment
-  (.put db (clj->js {:_id "6" :type "person"
-                     :name "Ahmad" :age 27
-                     :married-to ["1"]}))
-  
   (.put db (clj->js {:_id "1" :type "person"
                      :name "Sally" :age 22
                      :married-to ["6"]}))
-  
+
+  (.put db (clj->js {:_id "2" :type "person"
+                     :name "Bob" :age 33
+                     :married-to ["3" "4"]}))
+
+  (.put db (clj->js {:_id "3" :type "person"
+                     :name "Jim" :age 32
+                     :married-to ["2" "4"]}))
+
+  (.put db (clj->js {:_id "4" :type "person"
+                     :name "Robert" :age 28
+                     :married-to ["2" "3"]}))
+
+  (.put db (clj->js {:_id "5" :type "person"
+                     :name "Rey" :age 23
+                     :married-to []}))
+
+  (.put db (clj->js {:_id "6" :type "person"
+                     :name "Ahmad" :age 27
+                     :married-to ["1"]}))
   )
 
-
-
 (defmulti read om/dispatch)
-
-(defmethod read :window/size
-  [{:keys [state]} key params]
-  {:value (:window/size @state)})
 
 (defmethod read :pouch/by-id
   [{:keys [ast parser state query] :as env} key params]
@@ -121,8 +123,7 @@
                   :send send
                   :remotes [:remote :pouch]}))
 
-(def query [:window/size
-            {[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}])
+(def query [{[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}])
 
 (defui RootView
   static om/IQuery
@@ -135,39 +136,5 @@
                 six (get props [:pouch/by-id "6"])]
             (dom/p nil (str six)))))
 
-(comment
-  ;; ID not actually unique..
-  ({[:pouch/view "harvestsByFooBar"] [:foo :bar]}
-   {:startkey "abc"
-    :reduce true})
-  
-  ({:view/currentHives [:abc]} {:startkey "yard"})
-  ;; So how would I do
-  ;; YardName (current occupation / max hives)
-  ;; e.g.  - Locherhof        19/20
-  ;;       - Unterwaldhausen  22/24
-  ({:view/hivesAtYard [{:yard [:name :config]} :max]}
-   {:grouplevel 1
-    :reduce true})
-  ;; No good, because it requires postprocessing
-
-  ;; How about custom code for reading views?
-  ;; Problem: asynchronicity
-  ;; Solution: Cache custom view result(s) in a :ephemeral/name toplevel key. Clear on database change.
-
-  ;; Meh.. not sure.
-
-  ;; User provides some arbitrary name.
-  ;; We store and retrieve view results keyed by a hash of their parameters.
-
-  [({:view/hivesAtYard_sub [{:yard [:name :config]}]}
-    {:view "hivesAtYard"
-     :grouplevel 1
-     :reduce true})]
-  ;; Still need custom postprocessing, but we need that for docs, too.
-  )
-
 (om/add-root! reconciler
               RootView (gdom/getElement "app"))
-
-(parser {:state app-state} query)
