@@ -123,7 +123,8 @@
                   :send send
                   :remotes [:remote :pouch]}))
 
-(def query [{[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}])
+(def query [{[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}
+            {[:pouch/by-id "3"] [:name]}])
 
 (defui RootView
   static om/IQuery
@@ -133,8 +134,11 @@
   Object
   (render [this]
           (let [props (om/props this)
+                three (get props [:pouch/by-id "3"])
                 six (get props [:pouch/by-id "6"])]
-            (dom/p nil (str six)))))
+            (dom/div nil
+                     (dom/p nil (str three))
+                     (dom/p nil (str six))))))
 
 (om/add-root! reconciler
               RootView (gdom/getElement "app"))
