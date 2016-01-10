@@ -12,7 +12,7 @@
 (defonce db (js/PouchDB. "om-pouch"))
 
 (defonce app-state
-  (atom {:window/size [1920 1200]}))
+  (atom {}))
 
 (declare reconciler)
 
@@ -104,6 +104,12 @@
 
 (defmulti read om/dispatch)
 
+(defmethod read :friends
+  [{:keys [parser query] :as env} _ _]
+  (let [friendlist (mapv (partial vector :pouch/by-id) (map str (range 1 7)))
+        parsed (mapv (fn [friend] (second (first (parser env [{friend query}])))) friendlist)]
+    {:value parsed}))
+
 (defmethod read :pouch/by-id
   [{:keys [ast parser state query] :as env} key params]
   (if-let [doc (get-in @state (:key ast))]
@@ -144,7 +150,12 @@
 (def query [{[:pouch/by-id "3"] [:name {:married-to [:name {:married-to [:name]}]}]}
             {[:pouch/by-id "4"] [:name {:married-to [:name {:married-to [:name]}]}]}
             {[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}
-            ])
+            {:friends [:name]}])
+
+;; [({:view/hivesAtYard_sub [{:yard [:name :config]}]}
+;;   {:view "hivesAtYard"
+;;    :grouplevel 1
+;;    :reduce true})]
 
 (defui RootView
   static om/IQuery
@@ -154,11 +165,13 @@
   Object
   (render [this]
           (let [props (om/props this)
+                friends (get props :friends)
                 three (get props [:pouch/by-id "3"])
                 four (get props [:pouch/by-id "4"])
                 six (get props [:pouch/by-id "6"])
                 ]
             (dom/div nil
+                     (dom/p nil "friends" (str friends))
                      (dom/p nil "three" (str three))
                      (dom/p nil "four" (str four))
                      (dom/p nil "six" (str six))
