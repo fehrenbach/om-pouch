@@ -40,6 +40,22 @@
   (.put db (clj->js {:_id "6" :type "person"
                      :name "Ahmad" :age 27
                      :married-to ["1"]}))
+
+  (def married-to-map "function (doc) {
+  if (doc.type === \"person\") {
+    doc[\"married-to\"].forEach(function (id) {
+      emit(doc._id, id);
+    });
+  }
+  }")
+
+  (def married-to-ddoc #js {:_id "_design/married-to"
+                            :views #js {"married-to"
+                                        #js {:map married-to-map}}})
+
+  ;; (.put db married-to-ddoc alert-cb)
+
+  ;; (.query db "married-to/married-to" #js {:include_docs true} alert-cb)
   )
 
 
@@ -102,6 +118,24 @@
 (defn fetch-doc! [id]
   (put! fetch-doc-chan id))
 
+(defn fetch-view! [h params]
+  (.log js/console "fetch view with hash " h " and params " (str params))
+  (.query db
+          (:view params)
+          (clj->js params)
+          (fn [err res]
+            (if err
+              (.alert js/window err)
+              (let [rows (gobj/get res "rows")
+                    ;; TODO call postprocessing function instead of identity
+                    prows (mapv #(identity (js->clj % :keywordize-keys true))
+                                rows)]
+                (om/merge! reconciler {:view-result/by-hash (merge (:view-result/by-hash @app-state)
+                                                                   {h prows})})
+                ;; Not sure this is needed
+                ;; (om/force-root-render! reconciler)
+                )))))
+
 (defmulti read om/dispatch)
 
 (defmethod read :friends
@@ -118,27 +152,41 @@
       (fetch-doc! (second (:key ast)))
       {:value :loading})))
 
+(defn read-view
+  [{:keys [parser state query] :as env} key params]
+  (let [h (hash params)]
+    (.log js/console "read-view with hash " h)
+    (if-let [fetched (get-in @state [:view-result/by-hash h])]
+      (do (.log js/console "view result from state: " (str fetched))
+          ;; TODO recursively call parser
+          {:value 42})
+      (do
+        (fetch-view! h params)
+        {:value :loading}))))
+
 (defmethod read :default
   [{:keys [ast context parser query] :as env} key params]
-  (case (:type ast)
-    :prop
-    {:value (get context key)}
+  (if (= "view" (namespace key))
+    (read-view env key params)
+    (case (:type ast)
+      :prop
+      {:value (get context key)}
 
-    :join
-    (let [join-key (get context (:key ast))
-          ;; Om does not distinguish 1:1 1:N N:1 N:M joins
-          ;; We don't really want to call `the` all the time, so we try to autodetect it.
-          ;; BUG Unfortunately, this use of om/ident? is not safe (we apply it to data from the state, not a query.
-          ;; TODO Make this configurable (pass a parameter to the join?) and possibly remove autodetection / warn.
-          ;; one-to vs many-to
-          join-keys (if (om/ident? join-key) [join-key] join-key)
-          result (mapv (fn [join-key]
-                         ;; TODO What should the context be in env?
-                         (second (first (parser env [{join-key query}]))))
-                       join-keys)
-          ;; to-one vs to-many
-          result (if (= :pouch/by-id (first join-key)) (nth result 0) result)]
-      {:value result})))
+      :join
+      (let [join-key (get context (:key ast))
+            ;; Om does not distinguish 1:1 1:N N:1 N:M joins
+            ;; We don't really want to call `the` all the time, so we try to autodetect it.
+            ;; BUG Unfortunately, this use of om/ident? is not safe (we apply it to data from the state, not a query.
+            ;; TODO Make this configurable (pass a parameter to the join?) and possibly remove autodetection / warn.
+            ;; one-to vs many-to
+            join-keys (if (om/ident? join-key) [join-key] join-key)
+            result (mapv (fn [join-key]
+                           ;; TODO What should the context be in env?
+                           (second (first (parser env [{join-key query}]))))
+                         join-keys)
+            ;; to-one vs to-many
+            result (if (= :pouch/by-id (first join-key)) (nth result 0) result)]
+        {:value result}))))
 
 (def parser
   (om/parser {:read read}))
@@ -147,15 +195,14 @@
   (om/reconciler {:state app-state
                   :parser parser}))
 
-(def query [{[:pouch/by-id "3"] [:name {:married-to [:name {:married-to [:name]}]}]}
-            {[:pouch/by-id "4"] [:name {:married-to [:name {:married-to [:name]}]}]}
-            {[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}
-            {:friends [:name]}])
+(def query '[{[:pouch/by-id "3"] [:name {:married-to [:name {:married-to [:name]}]}]}
+             {[:pouch/by-id "4"] [:name {:married-to [:name {:married-to [:name]}]}]}
+             {[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}
+             {:friends [:name]}
+             ({:view/marriedToBob [:name]} {:view "married-to/married-to"
+                                            :startkey "2"
+                                            :endkey "2"})])
 
-;; [({:view/hivesAtYard_sub [{:yard [:name :config]}]}
-;;   {:view "hivesAtYard"
-;;    :grouplevel 1
-;;    :reduce true})]
 
 (defui RootView
   static om/IQuery
@@ -169,9 +216,11 @@
                 three (get props [:pouch/by-id "3"])
                 four (get props [:pouch/by-id "4"])
                 six (get props [:pouch/by-id "6"])
+                mtb (get props :view/marriedToBob)
                 ]
             (dom/div nil
                      (dom/p nil "friends" (str friends))
+                     (dom/p nil "mtb" (str mtb))
                      (dom/p nil "three" (str three))
                      (dom/p nil "four" (str four))
                      (dom/p nil "six" (str six))
