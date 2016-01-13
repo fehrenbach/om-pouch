@@ -5,5 +5,5 @@
                  [org.clojure/core.async "0.2.374"]
                  [org.omcljs/om "1.0.0-alpha28"]
                  [figwheel-sidecar "0.5.0-SNAPSHOT" :scope "test"]
-                 [cljsjs/pouchdb "5.1.0-1"]])
+                 [cljsjs/pouchdb "5.2.0-1"]])
 

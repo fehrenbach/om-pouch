@@ -63,6 +63,12 @@
   (-> doc
       (update :married-to (partial mapv (partial vector :pouch/by-id)))))
 
+(defn postprocess-view [params rows]
+  (.log js/console "postprocess view:" (str params) rows)
+  (case (:view params)
+    "married-to/married-to"
+    (mapv (fn [row] [:pouch/by-id (gobj/get row "value")]) rows)))
+
 ;; This stuff fetches documents by id.
 ;; Fetching in read is not very smart, so we deduplicate and batch here.
 ;; This kind of works, but could be smarter.
@@ -127,9 +133,7 @@
             (if err
               (.alert js/window err)
               (let [rows (gobj/get res "rows")
-                    ;; TODO call postprocessing function instead of identity
-                    prows (mapv #(identity (js->clj % :keywordize-keys true))
-                                rows)]
+                    prows (postprocess-view params rows)]
                 (om/merge! reconciler {:view-result/by-hash (merge (:view-result/by-hash @app-state)
                                                                    {h prows})})
                 ;; Not sure this is needed
@@ -158,6 +162,7 @@
     (.log js/console "read-view with hash " h)
     (if-let [fetched (get-in @state [:view-result/by-hash h])]
       (do (.log js/console "view result from state: " (str fetched))
+          (.log js/console "query: " (str query))
           ;; TODO recursively call parser
           {:value 42})
       (do
