@@ -64,7 +64,6 @@
       (update :married-to (partial mapv (partial vector :pouch/by-id)))))
 
 (defn postprocess-view [params rows]
-  (.log js/console "postprocess view:" (str params) rows)
   (case (:view params)
     "married-to/married-to"
     (mapv (fn [row] [:pouch/by-id (gobj/get row "value")]) rows)))
@@ -121,24 +120,49 @@
          (om/force-root-render! reconciler)))))
   (recur (<! all-docs-batches)))
 
+;; TODO this was more or less copy&pasted from the allDocs fetch.
+;; We can't batch view requests, but we should keep track of in-transit requests and drop duplicate requests.
+(def fetch-view-chan (chan))
+(def view-batches (chan))
+
+(go-loop [timeout-chan (timeout +fetch-timeout+)
+          buffer #{}]
+  (let [[v c] (alts! [fetch-view-chan timeout-chan])]
+    (cond
+      (= c timeout-chan)
+      (do
+        (when-not (empty? buffer)
+          (>! view-batches buffer))
+        (recur (timeout +fetch-timeout+) #{}))
+
+      (= c fetch-view-chan)
+      (let [buffer (conj buffer v)]
+        (if (<= +batch-size+ (count buffer))
+          (do (>! view-batches buffer)
+              (recur (timeout +fetch-timeout+) #{}))
+          (recur timeout-chan buffer))))))
+
+(go-loop [view-requests (<! view-batches)]
+  (doseq [[h params] view-requests]
+    (.log js/console "fetch view with hash " h " and params " (str params))
+    (.query db
+            (:view params)
+            (clj->js params)
+            (fn [err res]
+              (if err
+                (.alert js/window err)
+                (let [rows (gobj/get res "rows")
+                      prows (postprocess-view params rows)]
+                  (om/merge! reconciler {:view-result/by-hash (merge (:view-result/by-hash @app-state)
+                                                                     {h prows})})
+                  ;; Not sure this is needed
+                  (om/force-root-render! reconciler)))))))
+
 (defn fetch-doc! [id]
   (put! fetch-doc-chan id))
 
 (defn fetch-view! [h params]
-  (.log js/console "fetch view with hash " h " and params " (str params))
-  (.query db
-          (:view params)
-          (clj->js params)
-          (fn [err res]
-            (if err
-              (.alert js/window err)
-              (let [rows (gobj/get res "rows")
-                    prows (postprocess-view params rows)]
-                (om/merge! reconciler {:view-result/by-hash (merge (:view-result/by-hash @app-state)
-                                                                   {h prows})})
-                ;; Not sure this is needed
-                ;; (om/force-root-render! reconciler)
-                )))))
+  (put! fetch-view-chan [h params]))
 
 (defmulti read om/dispatch)
 
@@ -159,12 +183,13 @@
 (defn read-view
   [{:keys [parser state query] :as env} key params]
   (let [h (hash params)]
-    (.log js/console "read-view with hash " h)
     (if-let [fetched (get-in @state [:view-result/by-hash h])]
-      (do (.log js/console "view result from state: " (str fetched))
-          (.log js/console "query: " (str query))
-          ;; TODO recursively call parser
-          {:value 42})
+      ;; TODO This kinda assumes that the view-result is a vector.
+      ;; Maybe we should resolve idents here and pass data as :context in the env?
+      (let [recursion (mapv (fn [ref] (second (first (parser env [{ref query}])))) fetched)]
+        ;; (.log js/console "view result from state: " (str fetched))
+        ;; (.log js/console "query: " (str query))
+        {:value recursion})
       (do
         (fetch-view! h params)
         {:value :loading}))))
