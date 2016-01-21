@@ -184,11 +184,9 @@
   [{:keys [parser state query] :as env} key params]
   (let [h (hash params)]
     (if-let [fetched (get-in @state [:view-result/by-hash h])]
-      ;; TODO This kinda assumes that the view-result is a vector.
-      ;; Maybe we should resolve idents here and pass data as :context in the env?
+      ;; TODO This kinda assumes that the view-result is a vector, which might not be true for reductions or in general...
+      ;; TODO The {ref query} subquery assumes that ref is an ident. I think we can assume it's either a map OR an ident. TODO handle the plain data map case
       (let [recursion (mapv (fn [ref] (second (first (parser env [{ref query}])))) fetched)]
-        ;; (.log js/console "view result from state: " (str fetched))
-        ;; (.log js/console "query: " (str query))
         {:value recursion})
       (do
         (fetch-view! h params)
