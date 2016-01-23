@@ -68,101 +68,79 @@
     "married-to/married-to"
     (mapv (fn [row] [:pouch/by-id (gobj/get row "value")]) rows)))
 
-;; This stuff fetches documents by id.
-;; Fetching in read is not very smart, so we deduplicate and batch here.
-;; This kind of works, but could be smarter.
-;; We could remove ids from batches that are in transit, that is, that were requested from pouch, but not yet merged.
-;; The timeout and batch size need calibration. They both need to be large enough to allow for effective deduplication, but small enough to not be too slow.
-;; The timeout is a crutch. Ideally, we would want to return a list of docs to read from the parser, but I can't get that to work.
-;; Still better than timeouts would be to know when we finished parsing, so we can batch all docs in a single parse.
 
-(def +fetch-timeout+ 1000)
-(def +batch-size+ 5)
+(def +fetch-timeout+ 100)
 
-(def fetch-doc-chan (chan))
-(def all-docs-batches (chan))
+(def db-request-chan (chan))
+(def db-return-chan (chan))
 
-(go-loop [timeout-chan (timeout +fetch-timeout+)
-          buffer #{}]
-  (let [[v c] (alts! [fetch-doc-chan timeout-chan])]
-    (cond
-      (= c timeout-chan)
+;; We avoid duplicated fetches by keeping track of what is being fetched.
+;; We also collect document (not view) fetches to issue a bulk (.allDocs ...)
+;; request, because we potentially issue many doc fetches from a single call to
+;; the parser (in many calls to read).
+;; TODO Get rid of the timeout, and instead detect the return of the parser somehow.
+(go-loop [bulk-timeout (chan)
+          bulk-docs #{}
+          in-transit #{}]
+  (let [[value channel] (alts! [db-request-chan bulk-timeout db-return-chan])]
+    (.log js/console "db loop" (str value) (str bulk-docs) (str in-transit))
+    (condp = channel
+      db-request-chan
+      (if (contains? in-transit value)
+        (recur bulk-timeout bulk-docs in-transit)
+        (case (nth value 0)
+          :doc
+          (if (contains? bulk-docs value)
+            (recur bulk-timeout bulk-docs in-transit)
+            (if (empty? bulk-docs)
+              (recur (timeout +fetch-timeout+) (conj bulk-docs value) in-transit)
+              (recur bulk-timeout (conj bulk-docs value) in-transit)))
+
+          :view
+          (let [[_ h params] value]
+            (.query db
+                    (:view params)
+                    (clj->js params)
+                    (fn [err res]
+                      (if err
+                        (.alert js/window err)
+                        (let [rows (gobj/get res "rows")
+                              prows (postprocess-view params rows)]
+                          (om/merge! reconciler {:view-result/by-hash (merge (:view-result/by-hash @app-state)
+                                                                             {h prows})})
+                          ;; This is a bit finicky. We put #{value} because we remove with coljure.set/difference.
+                          (put! db-return-chan #{value})))))
+            (recur bulk-timeout bulk-docs (conj in-transit value)))))
+
+      bulk-timeout
+      (let [ids (map #(nth % 1) bulk-docs)]
+        (.allDocs db
+                  (clj->js {:keys ids :include_docs true})
+                  (fn [err res]
+                    (if err
+                      (.alert js/window err)
+                      (let [rows (gobj/get res "rows")
+                            pdocs (map #(postprocess-doc (js->clj (gobj/get % "doc") :keywordize-keys true))
+                                       rows)]
+                        ;; TODO merge order? deeper merge?
+                        (om/merge! reconciler {:pouch/by-id (merge (:pouch/by-id @app-state)
+                                                                   (zipmap ids pdocs))})
+                        (put! db-return-chan bulk-docs)))))
+        (recur (chan) #{} (into in-transit bulk-docs)))
+
+      db-return-chan
       (do
-        (when-not (empty? buffer)
-          (>! all-docs-batches buffer))
-        (recur (timeout +fetch-timeout+) #{}))
-
-      (= c fetch-doc-chan)
-      (let [buffer (conj buffer v)]
-        (if (<= +batch-size+ (count buffer))
-          (do (>! all-docs-batches buffer)
-              (recur (timeout +fetch-timeout+) #{}))
-          (recur timeout-chan buffer))))))
-
-(go-loop [ids (<! all-docs-batches)]
-  (.log js/console "fetch docs: " (str ids))
-  (.allDocs
-   db
-   (clj->js {:keys ids
-             :include_docs true})
-   (fn [err res]
-     (if err
-       (.alert js/window err)
-       (let [rows (gobj/get res "rows")
-             pdocs (map #(postprocess-doc (js->clj (gobj/get % "doc") :keywordize-keys true))
-                        rows)]
-         ;; TODO merge order? deeper merge?
-         (om/merge! reconciler {:pouch/by-id (merge (:pouch/by-id @app-state)
-                                                    (zipmap ids pdocs))})
-         ;; BUG shit doesn't rerender
-         ;; om/merge! docstring says: "Affected components managed by the reconciler will re-render."
-         ;; Doesn't seem to work though, workaround: force render
-         (om/force-root-render! reconciler)))))
-  (recur (<! all-docs-batches)))
-
-;; TODO this was more or less copy&pasted from the allDocs fetch.
-;; We can't batch view requests, but we should keep track of in-transit requests and drop duplicate requests.
-(def fetch-view-chan (chan))
-(def view-batches (chan))
-
-(go-loop [timeout-chan (timeout +fetch-timeout+)
-          buffer #{}]
-  (let [[v c] (alts! [fetch-view-chan timeout-chan])]
-    (cond
-      (= c timeout-chan)
-      (do
-        (when-not (empty? buffer)
-          (>! view-batches buffer))
-        (recur (timeout +fetch-timeout+) #{}))
-
-      (= c fetch-view-chan)
-      (let [buffer (conj buffer v)]
-        (if (<= +batch-size+ (count buffer))
-          (do (>! view-batches buffer)
-              (recur (timeout +fetch-timeout+) #{}))
-          (recur timeout-chan buffer))))))
-
-(go-loop [view-requests (<! view-batches)]
-  (doseq [[h params] view-requests]
-    (.log js/console "fetch view with hash " h " and params " (str params))
-    (.query db
-            (:view params)
-            (clj->js params)
-            (fn [err res]
-              (if err
-                (.alert js/window err)
-                (let [rows (gobj/get res "rows")
-                      prows (postprocess-view params rows)]
-                  (om/merge! reconciler {:view-result/by-hash (merge (:view-result/by-hash @app-state)
-                                                                     {h prows})})
-                  ;; Not sure this is needed
-                  (om/force-root-render! reconciler)))))))
+        ;; BUG shit doesn't rerender
+        ;; om/merge! docstring says: "Affected components managed by the reconciler will re-render."
+        ;; Doesn't seem to work though, workaround: force render
+        (js/setTimeout #(om/force-root-render! reconciler) 0)
+        (recur bulk-timeout bulk-docs (clojure.set/difference in-transit value))))))
 
 (defn fetch-doc! [id]
-  (put! fetch-doc-chan id))
+  (put! db-request-chan [:doc id]))
 
 (defn fetch-view! [h params]
-  (put! fetch-view-chan [h params]))
+  (put! db-request-chan [:view h params]))
 
 (defmulti read om/dispatch)
 
