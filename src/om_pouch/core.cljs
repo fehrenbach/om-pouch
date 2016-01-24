@@ -144,12 +144,6 @@
 
 (defmulti read om/dispatch)
 
-(defmethod read :friends
-  [{:keys [parser query] :as env} _ _]
-  (let [friendlist (mapv (partial vector :pouch/by-id) (map str (range 1 7)))
-        parsed (mapv (fn [friend] (second (first (parser env [{friend query}])))) friendlist)]
-    {:value parsed}))
-
 (defmethod read :pouch/by-id
   [{:keys [ast parser state query] :as env} key params]
   (if-let [doc (get-in @state (:key ast))]
@@ -201,36 +195,53 @@
   (om/reconciler {:state app-state
                   :parser parser}))
 
-(def query '[{[:pouch/by-id "3"] [:name {:married-to [:name {:married-to [:name]}]}]}
-             {[:pouch/by-id "4"] [:name {:married-to [:name {:married-to [:name]}]}]}
-             {[:pouch/by-id "6"] [:name {:married-to [:name {:married-to [:name]}]}]}
-             {:friends [:name]}
-             ({:view/marriedToBob [:name]} {:view "married-to/married-to"
-                                            :startkey "2"
-                                            :endkey "2"})])
-
-
-(defui RootView
+(defui Person
   static om/IQuery
   (query [this]
-         query)
+         '[:name :_id])
 
   Object
   (render [this]
           (let [props (om/props this)
-                friends (get props :friends)
-                three (get props [:pouch/by-id "3"])
-                four (get props [:pouch/by-id "4"])
-                six (get props [:pouch/by-id "6"])
-                mtb (get props :view/marriedToBob)
-                ]
+                name (:name props)
+                id (:_id props)]
+            (dom/span (clj->js {:onClick #(om/set-query! reconciler {:params {:id id}})
+                                :style {:textDecoration "underline"}})
+                      name))))
+
+(def person (om/factory Person))
+
+(defn empty-when-loading [s]
+  (if (= :loading s)
+    []
+    s))
+
+(defui RootView
+  static om/IQueryParams
+  (params [this]
+          {:id "2"})
+
+  static om/IQuery
+  (query [this]
+         `[{[:pouch/by-id ~'?id] [:name {:married-to ~(om/get-query Person)}]}
+           ({:view/marriedNotRefl ~(om/get-query Person)} {:view "married-to/married-to"
+                                                           :startkey ~'?id
+                                                           :endkey ~'?id})])
+
+  Object
+  (render [this]
+          (let [props (om/props this)
+                p (get props [:pouch/by-id (:id (om/get-params this))])
+                name (:name p)
+                mnr (empty-when-loading (:view/marriedNotRefl props))]
             (dom/div nil
-                     (dom/p nil "friends" (str friends))
-                     (dom/p nil "mtb" (str mtb))
-                     (dom/p nil "three" (str three))
-                     (dom/p nil "four" (str four))
-                     (dom/p nil "six" (str six))
-                     ))))
+                     (dom/h1 nil name)
+                     (apply dom/p nil name " is married to "
+                            (concat (interpose ", " (map person (empty-when-loading (:married-to p))))
+                                    ["."]))
+                     (apply dom/p nil "(Not necessarily reflexively:) "
+                            (concat (interpose ", " (map person mnr))
+                                    [" are married to " name "."]))))))
 
 (om/add-root! reconciler
               RootView (gdom/getElement "app"))
