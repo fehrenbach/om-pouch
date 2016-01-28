@@ -56,6 +56,20 @@
   ;; (.put db married-to-ddoc alert-cb)
 
   ;; (.query db "married-to/married-to" #js {:include_docs true} alert-cb)
+
+  (def people-map "function (doc) {
+  if (doc.type === \"person\") {
+    emit(doc._id);
+  }
+}")
+
+  (def people-ddoc #js {:_id "_design/people"
+                        :views #js {"people"
+                                    #js {:map people-map}}})
+
+  ;; (.put db people-ddoc alert-cb)
+
+  ;; (.query db "people" #js{} #(.log js/console %2))
   )
 
 
@@ -66,7 +80,10 @@
 (defn postprocess-view [params rows]
   (case (:view params)
     "married-to/married-to"
-    (mapv (fn [row] [:pouch/by-id (gobj/get row "value")]) rows)))
+    (mapv (fn [row] [:pouch/by-id (gobj/get row "value")]) rows)
+
+    "people"
+    (mapv (fn [row] [:pouch/by-id (gobj/get row "id")]) rows)))
 
 
 (def +fetch-timeout+ 100)
@@ -243,5 +260,22 @@
                             (concat (interpose ", " (map person mnr))
                                     [" are married to " name "."]))))))
 
+(defui People
+  static om/IQuery
+  (query [this]
+         '[({:view/people [:name :_id]}
+            {:view "people"})])
+
+  Object
+  (render [this]
+          (let [people (empty-when-loading (:view/people (om/props this)))]
+            (apply dom/ul nil
+                   (map (fn [p]
+                          (dom/li (clj->js {:onClick #(do ;; TODO this is way too hacky, use a router
+                                                        (om/add-root! reconciler RootView (gdom/getElement "app"))
+                                                        (om/set-query! reconciler {:params {:id (:_id p)}}))})
+                                  (:name p)))
+                        people)))))
+
 (om/add-root! reconciler
-              RootView (gdom/getElement "app"))
+              People (gdom/getElement "app"))
